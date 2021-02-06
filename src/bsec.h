@@ -42,6 +42,7 @@
 #include "Arduino.h"
 #include "Wire.h"
 #include "SPI.h"
+#include "RTCZero.h"
 #include "inc/bsec_datatypes.h"
 #include "inc/bsec_interface.h"
 #include "bme680/bme680.h"
@@ -61,6 +62,7 @@ uint8_t iaqAccuracy, staticIaqAccuracy, co2Accuracy, breathVocAccuracy, compGasA
 int64_t outputTimestamp;        /* Timestamp in ms of the output */
 static TwoWire *wireObj;
 static SPIClass *spiObj;
+static RTCZero *rtcObj;
 
 /* Public APIs */
 
@@ -81,7 +83,8 @@ void begin(uint8_t devId,
            enum bme680_intf intf,
            bme680_com_fptr_t read,
            bme680_com_fptr_t write,
-           bme680_delay_fptr_t idleTask);
+           bme680_delay_fptr_t idleTask,
+           RTCZero &rtc);
 
 /**
  * @brief Function to initialize the BSEC library and the BME680 sensor
@@ -89,7 +92,7 @@ void begin(uint8_t devId,
  * @param i2c       : Pointer to the TwoWire object
  * @param idleTask  : Task to be called when idling
  */
-void begin(uint8_t i2cAddr, TwoWire &i2c, bme680_delay_fptr_t idleTask = delay_ms);
+void begin(uint8_t i2cAddr, TwoWire &i2c, RTCZero &rtc, bme680_delay_fptr_t idleTask = delay_ms);
 
 /**
  * @brief Function to initialize the BSEC library and the BME680 sensor
@@ -97,7 +100,7 @@ void begin(uint8_t i2cAddr, TwoWire &i2c, bme680_delay_fptr_t idleTask = delay_m
  * @param spi           : Pointer to the SPIClass object
  * @param idleTask  : Task to be called when idling
  */
-void begin(uint8_t chipSelect, SPIClass &spi, bme680_delay_fptr_t idleTask = delay_ms);
+void begin(uint8_t chipSelect, SPIClass &spi, RTCZero &rtc, bme680_delay_fptr_t idleTask = delay_ms);
 
 /**
  * @brief Function that sets the desired sensors and the sample rates
@@ -113,6 +116,18 @@ void updateSubscription(bsec_virtual_sensor_t sensorList[], uint8_t nSensors, fl
  * @return true if there are new outputs. false otherwise
  */
 bool run(int64_t timeMilliseconds = -1);
+
+/**
+ * @brief Start an asynchronous reading of data from the BME680
+ * @return true if operation succeeded
+ */
+bool beginReading();
+
+/**
+ * @brief Finish an asynchronous reading of data from the BME680
+ * @return true if operation succeeded
+ */
+bool endReading();
 
 /**
  * @brief Function to get the state of the algorithm to save to non-volatile memory
@@ -200,6 +215,12 @@ bool validBsecState;
 uint8_t bsecState[BSEC_MAX_STATE_BLOB_SIZE];
 bsec_sensor_configuration_t virtualSensors[BSEC_NUMBER_OUTPUTS], sensorSettings[BSEC_MAX_PHYSICAL_SENSOR];
 uint8_t nSensorSettings;
+
+struct {
+    int64_t readStartTimeNs;
+    uint16_t measurePeriodMs;
+    bsec_bme_settings_t bme680Settings;
+} asyncCall;
 
 /* Private APIs */
 

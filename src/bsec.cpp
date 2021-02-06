@@ -39,6 +39,7 @@
 
 TwoWire* Bsec::wireObj = NULL;
 SPIClass* Bsec::spiObj = NULL;
+RTCZero* Bsec::rtcObj = NULL;
 
 /**
  * @brief Constructor
@@ -68,7 +69,8 @@ void Bsec::begin(uint8_t devId,
                  enum bme680_intf intf,
                  bme680_com_fptr_t read,
                  bme680_com_fptr_t write,
-                 bme680_delay_fptr_t idleTask)
+                 bme680_delay_fptr_t idleTask,
+                 RTCZero &rtc)
 {
     _bme680.dev_id = devId;
     _bme680.intf = intf;
@@ -78,13 +80,15 @@ void Bsec::begin(uint8_t devId,
     _bme680.amb_temp = 25;
     _bme680.power_mode = BME680_FORCED_MODE;
 
+    Bsec::rtcObj = &rtc;
+
     beginCommon();
 }
 
 /**
  * @brief Function to initialize the BSEC library and the BME680 sensor
  */
-void Bsec::begin(uint8_t i2cAddr, TwoWire &i2c, bme680_delay_fptr_t idleTask)
+void Bsec::begin(uint8_t i2cAddr, TwoWire &i2c, RTCZero &rtc, bme680_delay_fptr_t idleTask)
 {
     _bme680.dev_id = i2cAddr;
     _bme680.intf = BME680_I2C_INTF;
@@ -95,6 +99,7 @@ void Bsec::begin(uint8_t i2cAddr, TwoWire &i2c, bme680_delay_fptr_t idleTask)
     _bme680.power_mode = BME680_FORCED_MODE;
 
     Bsec::wireObj = &i2c;
+    Bsec::rtcObj = &rtc;
 
     beginCommon();
 }
@@ -102,7 +107,7 @@ void Bsec::begin(uint8_t i2cAddr, TwoWire &i2c, bme680_delay_fptr_t idleTask)
 /**
  * @brief Function to initialize the BSEC library and the BME680 sensor
  */
-void Bsec::begin(uint8_t chipSelect, SPIClass &spi, bme680_delay_fptr_t idleTask)
+void Bsec::begin(uint8_t chipSelect, SPIClass &spi, RTCZero &rtc, bme680_delay_fptr_t idleTask)
 {
     _bme680.dev_id = chipSelect;
     _bme680.intf = BME680_SPI_INTF;
@@ -115,6 +120,7 @@ void Bsec::begin(uint8_t chipSelect, SPIClass &spi, bme680_delay_fptr_t idleTask
     pinMode(chipSelect, OUTPUT);
     digitalWrite(chipSelect, HIGH);
     Bsec::spiObj = &spi;
+    Bsec::rtcObj = &rtc;
 
     beginCommon();
 }
@@ -251,6 +257,77 @@ bool Bsec::run(int64_t timeMilliseconds)
                                 &n_serialized_state);
         validBsecState = true;
     }
+
+    return newData;
+}
+
+bool Bsec::beginReading()
+{
+    if (rtcObj == NULL) {
+        return false;
+    }
+
+    bsec_init();
+
+    if (validBsecState)
+    {
+        setState(bsecState);
+    }
+
+    nSensorSettings = BSEC_MAX_PHYSICAL_SENSOR;
+    status = bsec_update_subscription(virtualSensors, BSEC_NUMBER_OUTPUTS, sensorSettings, &nSensorSettings);
+
+    /* Can't use millis() or getTimeMs() if MCU enters deep sleep state. */
+    asyncCall.readStartTimeNs = rtcObj->getEpoch() * INT64_C(1000000000);
+
+    status = bsec_sensor_control(asyncCall.readStartTimeNs, &asyncCall.bme680Settings);
+    if (status < BSEC_OK)
+    {
+        asyncCall.readStartTimeNs = 0;
+        return false;
+    }
+
+    bme680Status = setBme680Config(asyncCall.bme680Settings);
+    if (bme680Status != BME680_OK)
+    {
+        asyncCall.readStartTimeNs = 0;
+        return false;
+    }
+
+    bme680Status = bme680_set_sensor_mode(&_bme680);
+    if (bme680Status != BME680_OK)
+    {
+        asyncCall.readStartTimeNs = 0;
+        return false;
+    }
+
+    bme680_get_profile_dur(&asyncCall.measurePeriodMs, &_bme680);
+    return true;
+}
+
+bool Bsec::endReading()
+{
+    if (asyncCall.readStartTimeNs == 0) {
+        return false;
+    }
+
+    int64_t sampleTimeNs = asyncCall.readStartTimeNs +
+                           asyncCall.measurePeriodMs * INT64_C(1000000);
+
+    bool newData = readProcessData(sampleTimeNs, asyncCall.bme680Settings);
+
+    uint8_t workBuffer[BSEC_MAX_STATE_BLOB_SIZE];
+    uint32_t n_serialized_state = BSEC_MAX_STATE_BLOB_SIZE;
+    status = bsec_get_state(0,
+                            bsecState,
+                            BSEC_MAX_STATE_BLOB_SIZE,
+                            workBuffer,
+                            BSEC_MAX_STATE_BLOB_SIZE,
+                            &n_serialized_state);
+    validBsecState = true;
+
+    asyncCall.readStartTimeNs = 0;
+    asyncCall.measurePeriodMs = 0;
 
     return newData;
 }
